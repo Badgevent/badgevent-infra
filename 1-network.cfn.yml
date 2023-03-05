@@ -1,0 +1,399 @@
+Description:  This template deploys a VPC and Network resources for Badgevent
+
+  pEnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+
+  pVpcCIDR:
+    Description: Please enter the IP range (CIDR notation) for this VPC
+    Type: String
+    Default: 10.192.0.0/16
+
+  pAZ1:
+    Description: First AZ Index (letter order and 0 based)
+    Type: String
+    Default: 5
+
+  pAZ2:
+    Description: Second AZ Index (letter order and 0 based)
+    Type: String
+    Default: 0
+
+  pPublicKey:
+    Description: RSA Public Key to use for SSH Access
+    Type: String
+
+Resources:
+
+  rVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref pVpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Ref pEnvironmentName
+
+  rCidrBlock:
+    Type: AWS::EC2::VPCCidrBlock
+    Properties:
+      AmazonProvidedIpv6CidrBlock: true
+      VpcId: !Ref rVPC
+
+  rInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Ref pEnvironmentName
+
+  rInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    DependsOn: rCidrBlock
+    Properties:
+      InternetGatewayId: !Ref rInternetGateway
+      VpcId: !Ref rVPC
+
+  rPublicSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: rCidrBlock
+    Properties:
+      VpcId: !Ref rVPC
+      AvailabilityZone: !Select [ !Ref pAZ1, !GetAZs '' ]
+      AssignIpv6AddressOnCreation: true
+      CidrBlock: !Select [ 0, !Cidr [ !GetAtt rVPC.CidrBlock, 4, 6 ]]
+      Ipv6CidrBlock: !Select [ 0, !Cidr [ !Select [ 0, !GetAtt rVPC.Ipv6CidrBlocks], 4, 64 ]]
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Public Subnet (AZ1)
+
+  rPublicSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: rCidrBlock
+    Properties:
+      VpcId: !Ref rVPC
+      AvailabilityZone: !Select [ !Ref pAZ2, !GetAZs  '' ]
+      AssignIpv6AddressOnCreation: true
+      CidrBlock: !Select [ 1, !Cidr [ !GetAtt rVPC.CidrBlock, 4, 6 ]]
+      Ipv6CidrBlock: !Select [ 1, !Cidr [ !Select [ 0, !GetAtt rVPC.Ipv6CidrBlocks], 4, 64 ]]
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Public Subnet (AZ2)
+
+  rNatGatewaySubnet1EIP:
+    Type: AWS::EC2::EIP
+
+  rNatGatewaySubnet1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt rNatGatewaySubnet1EIP.AllocationId
+      SubnetId: !Ref rPublicSubnet1
+
+  rNatGatewaySubnet2EIP:
+    Type: AWS::EC2::EIP
+
+  rNatGatewaySubnet2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt rNatGatewaySubnet2EIP.AllocationId
+      SubnetId: !Ref rPublicSubnet2
+
+  rPrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    DependsOn: rCidrBlock
+    Properties:
+      VpcId: !Ref rVPC
+      AvailabilityZone: !Select [ !Ref pAZ1, !GetAZs  '' ]
+      AssignIpv6AddressOnCreation: true
+      CidrBlock: !Select [ 2, !Cidr [ !GetAtt rVPC.CidrBlock, 4, 6 ]]
+      Ipv6CidrBlock: !Select [ 2, !Cidr [ !Select [ 0, !GetAtt rVPC.Ipv6CidrBlocks], 4, 64 ]]
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Private Subnet (AZ1)
+
+  rPrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    DependsOn: rCidrBlock
+    Properties:
+      VpcId: !Ref rVPC
+      AvailabilityZone: !Select [ !Ref pAZ2, !GetAZs  '' ]
+      AssignIpv6AddressOnCreation: true
+      CidrBlock: !Select [ 3, !Cidr [ !GetAtt rVPC.CidrBlock, 4, 6 ]]
+      Ipv6CidrBlock: !Select [ 3, !Cidr [ !Select [ 0, !GetAtt rVPC.Ipv6CidrBlocks], 4, 64 ]]
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Private Subnet (AZ2)
+
+  rEgressOnlyInternetGateway:
+    Type: AWS::EC2::EgressOnlyInternetGateway
+    DependsOn: rCidrBlock
+    Properties:
+      VpcId: !Ref rVPC
+
+  rPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: rCidrBlock
+    Properties:
+      VpcId: !Ref rVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Public Routes
+
+  rDefaultPublicIpv6Route:
+    Type: AWS::EC2::Route
+    DependsOn: rInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref rPublicRouteTable
+      DestinationIpv6CidrBlock: ::/0
+      GatewayId: !Ref rInternetGateway
+
+  rDefaultPublicIpv4Route:
+    Type: AWS::EC2::Route
+    DependsOn: rInternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref rPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref rInternetGateway
+
+  rPublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPublicRouteTable
+      SubnetId: !Ref rPublicSubnet1
+
+  rPublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPublicRouteTable
+      SubnetId: !Ref rPublicSubnet2
+
+  rPrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Private Routes (AZ1)
+
+  rDefaultIpv6Route1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTable1
+      DestinationIpv6CidrBlock: ::/0
+      EgressOnlyInternetGatewayId: !Ref rEgressOnlyInternetGateway
+
+  rDefaultIpv4Route1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref rNatGatewaySubnet1
+
+  rPrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTable1
+      SubnetId: !Ref rPrivateSubnet1
+
+  rPrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref rVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${pEnvironmentName} Private Routes (AZ2)
+
+  rDefaultIpv6Route2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTable2
+      DestinationIpv6CidrBlock: ::/0
+      EgressOnlyInternetGatewayId: !Ref rEgressOnlyInternetGateway
+
+  rDefaultIpV4Route2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref rNatGatewaySubnet2
+
+  rPrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref rPrivateRouteTable2
+      SubnetId: !Ref rPrivateSubnet2
+
+  rS3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      RouteTableIds:
+        - !Ref rPublicRouteTable
+        - !Ref rPrivateRouteTable1
+        - !Ref rPrivateRouteTable2
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref rVPC
+
+  rDDBGatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      RouteTableIds:
+        - !Ref rPublicRouteTable
+        - !Ref rPrivateRouteTable1
+        - !Ref rPrivateRouteTable2
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.dynamodb'
+      VpcId: !Ref rVPC
+
+  rLoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: rCidrBlock
+    Properties:
+      GroupName: "load-balancer"
+      GroupDescription: !Sub "${pEnvironmentName} Load Balancer"
+      VpcId: !Ref rVPC
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIpv6: ::/0
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 443
+        CidrIpv6: ::/0
+
+  rWebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: rCidrBlock
+    Properties:
+      GroupName: "web-server"
+      GroupDescription: !Sub "${pEnvironmentName} Web Servers"
+      VpcId: !Ref rVPC
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 443
+        ToPort: 443
+        SourceSecurityGroupId: !Ref rLoadBalancerSecurityGroup
+
+  rDevServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: rCidrBlock
+    Properties:
+      GroupName: "dev-server"
+      GroupDescription: !Sub "${pEnvironmentName} Dev Servers"
+      VpcId: !Ref rVPC
+
+  rDatabaseServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: rCidrBlock
+    Properties:
+      GroupName: "database-server"
+      GroupDescription: !Sub "${pEnvironmentName} Database Servers"
+      VpcId: !Ref rVPC
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref rWebServerSecurityGroup
+      - IpProtocol: tcp
+        FromPort: 3306
+        ToPort: 3306
+        SourceSecurityGroupId: !Ref rDevServerSecurityGroup
+
+  rWebServerEfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: rCidrBlock
+    Properties:
+      GroupName: "webserver-efs"
+      GroupDescription: !Sub "${pEnvironmentName} WebServer EFS"
+      VpcId: !Ref rVPC
+      SecurityGroupIngress: 
+      - IpProtocol: tcp
+        FromPort: 2049
+        ToPort: 2049
+        SourceSecurityGroupId: !Ref rWebServerSecurityGroup
+      - IpProtocol: tcp
+        FromPort: 2049
+        ToPort: 2049
+        SourceSecurityGroupId: !Ref rDevServerSecurityGroup
+
+Outputs:
+  oVPC:
+    Description: A reference to the created VPC
+    Value: !Ref rVPC
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", VPC ] ]
+
+  oPublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [ ",", [ !Ref rPublicSubnet1, !Ref rPublicSubnet2 ]]
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", PublicSubnets ] ]
+
+  oPrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [ ",", [ !Ref rPrivateSubnet1, !Ref rPrivateSubnet2 ]]
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", PrivateSubnets ] ]
+
+  oPublicSubnet1:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref rPublicSubnet1
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", PublicSubnet1 ] ]
+
+  oPublicSubnet2:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref rPublicSubnet2
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", PublicSubnet2 ] ]
+
+  oPrivateSubnet1:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref rPrivateSubnet1
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", PrivateSubnet1 ] ]
+
+  oPrivateSubnet2:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref rPrivateSubnet2
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", PrivateSubnet2 ] ]
+
+  oLoadBalancerSecurityGroup:
+    Description: A reference to the Load Balancer Security Group
+    Value: !Ref rLoadBalancerSecurityGroup
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", LoadBalancerSecurityGroup ] ]
+
+  oWebServerSecurityGroup:
+    Description: A reference to the Web Server Security Group
+    Value: !Ref rWebServerSecurityGroup
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", WebServerSecurityGroup ] ]
+
+  oDevServerSecurityGroup:
+    Description: A reference to the Dev Server Security Group
+    Value: !Ref rDevServerSecurityGroup
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", DevServerSecurityGroup ] ]
+
+  oDatabaseServerSecurityGroup:
+    Description: A reference to the Database Server Security Group
+    Value: !Ref rDatabaseServerSecurityGroup
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", DatabaseServerSecurityGroup ] ]
+
+  oWebServerEfsSecurityGroup:
+    Description: A reference to the Web Server EFS Security Group
+    Value: !Ref rWebServerEfsSecurityGroup
+    Export:
+      Name: !Join [ ":", [ !Ref "pEnvironmentName", WebServerEfsSecurityGroup ] ]
+

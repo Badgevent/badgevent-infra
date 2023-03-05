@@ -1,0 +1,285 @@
+Description:  This template deploys a Compute resources for Badgevent
+
+Parameters:
+  pEnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+
+Resources:
+
+  rDevServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${pEnvironmentName}DevServer
+      LaunchTemplateData:
+        NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: false
+          Groups:
+            - !Ref rDevServerSecurityGroup
+          DeleteOnTermination: true
+        ImageId: ami-01b5ec3ed8678d8b7
+        InstanceType: t4g.nano
+        KeyName: !Ref rKeyPair
+        UserData:
+          Fn::Base64: !Sub |
+            MIME-Version: 1.0
+            Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+            --==MYBOUNDARY==
+            Content-Type: text/cloud-config; charset="us-ascii"
+
+            package-update: true
+
+            bootcmd:
+            - amazon-linux-extras enable nginx1.12 php7.2
+            - yum clean metadata
+
+            packages:
+            - amazon-efs-utils
+            - amazon-cloudwatch-agent
+            - git
+            - nginx 
+            - php 
+            - php-fpm 
+            - php-cli 
+            - php-gd 
+            - php-pdo 
+            - php-json 
+            - php-mysqlnd 
+            - php-mbstring 
+            - php-xml
+
+            runcmd:
+            - file_system_id_01=${rWebServerEFS}
+            - efs_directory=/mnt/efs
+
+            - mkdir -p ${!efs_directory}
+            - echo "${!file_system_id_01}:/ ${!efs_directory} efs rw,tls,_netdev" >> /etc/fstab
+            - mount -a -t efs defaults
+
+            --==MYBOUNDARY==--
+        IamInstanceProfile:
+          Name: !Ref rDevServerEc2InstanceProfile
+        TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: Name
+            Value: !Sub "${pEnvironmentName}-DevServer"
+        MetadataOptions:
+          HttpProtocolIpv6: enabled
+          HttpTokens: required
+          InstanceMetadataTags: enabled
+
+  rWebServerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${pEnvironmentName}WebServer
+      LaunchTemplateData:
+        NetworkInterfaces:
+        - DeviceIndex: 0
+          AssociatePublicIpAddress: false
+          Groups:
+            - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:WebServerSecurityGroup"
+          DeleteOnTermination: true
+        ImageId: ami-01b5ec3ed8678d8b7
+        InstanceType: m6gd.medium
+        KeyName: !Ref rKeyPair
+        UserData:
+          Fn::Base64: !Sub |
+            MIME-Version: 1.0
+            Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+            --==MYBOUNDARY==
+            Content-Type: text/cloud-config; charset="us-ascii"
+
+            package-update: true
+
+            bootcmd:
+            - amazon-linux-extras enable nginx1.12 php7.2
+            - yum clean metadata
+
+            packages:
+            - amazon-efs-utils
+            - amazon-cloudwatch-agent
+            - nginx 
+            - php 
+            - php-fpm 
+            - php-cli 
+            - php-gd 
+            - php-pdo 
+            - php-json 
+            - php-mysqlnd 
+            - php-mbstring 
+            - php-xml
+
+            runcmd:
+            - file_system_id_01=${rWebServerEFS}
+            - efs_directory=/mnt/efs
+
+            - mkdir -p ${!efs_directory}
+            - echo "${!file_system_id_01}:/ ${!efs_directory} efs ro,tls,_netdev" >> /etc/fstab
+            - mount -a -t efs defaults
+
+            - mkfs -t xfs /dev/nvme1n1
+            - data_uuid=`lsblk -o UUID -n /dev/nvme1n1`
+            - echo "UUID=$data_uuid /data xfs defaults,nofail 0 2" >>/etc/fstab
+            - mkdir /data
+            - mount /data
+            - chown apache /data
+            - chgrp apache /data
+            - chmod 2774 /data
+            - umask 0002
+            - mkdir -p /data/smarty/templates/bin
+            - mkdir -p /data/smarty/templates/cache
+            - mkdir -p /data/smarty/templates/configs
+
+            - cp /mnt/efs/Con-Organizer/config/etc_nginx_nginx.conf /etc/nginx/nginx.conf
+            - cp /mnt/efs/Con-Organizer/config/etc_php-fpm.d_www.conf /etc/php-fpm.d/www.conf
+
+            --==MYBOUNDARY==--
+        IamInstanceProfile:
+          Name: !Ref rWebServerEc2InstanceProfile
+        TagSpecifications:
+        - ResourceType: instance
+          Tags:
+          - Key: Name
+            Value: !Sub "${pEnvironmentName}-WebServer"
+        MetadataOptions:
+          HttpProtocolIpv6: enabled
+          HttpTokens: required
+          InstanceMetadataTags: enabled
+
+  rWebServerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckIntervalSeconds: 300
+      HealthCheckPath: /
+      HealthCheckPort: 443
+      HealthCheckProtocol: HTTPS
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      IpAddressType: ipv4
+      Matcher: 
+        HttpCode: 200
+      Name: !Sub "${pEnvironmentName}-WebServers"
+      Port: 443
+      Protocol: HTTPS
+      ProtocolVersion: HTTP2
+      TargetType: instance
+      UnhealthyThresholdCount: 2
+      VpcId: Fn::ImportValue:
+            !Sub "${pEnvironmentName}:VPC"
+
+  rDevServerTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckEnabled: false
+      IpAddressType: ipv4
+      Name: !Sub "${pEnvironmentName}-DevServers"
+      Port: 443
+      Protocol: HTTPS
+      ProtocolVersion: HTTP2
+      TargetType: instance
+      VpcId: Fn::ImportValue:
+            !Sub "${pEnvironmentName}:VPC"
+
+  rWebServerAutoScaleGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${pEnvironmentName}-WebServers"
+      AvailabilityZones: 
+        - !Select [ !Ref pAZ1, !GetAZs '' ]
+        - !Select [ !Ref pAZ2, !GetAZs '' ]
+      Cooldown: 300
+      DefaultInstanceWarmup: 0
+      DesiredCapacity: 1
+      DesiredCapacityType: units
+      HealthCheckGracePeriod: 0
+      HealthCheckType: EC2
+      LaunchTemplate: 
+        LaunchTemplateId: !Ref rWebServerLaunchTemplate
+        Version: !GetAtt rWebServerLaunchTemplate.LatestVersionNumber
+      MaxSize: 1
+      MinSize: 1
+      TargetGroupARNs: 
+        - !Ref rWebServerTargetGroup
+      VPCZoneIdentifier: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet1"
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet2"
+
+  rDevServerAutoScaleGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub "${pEnvironmentName}-DevServers"
+      AvailabilityZones: 
+        - !Select [ !Ref pAZ1, !GetAZs '' ]
+        - !Select [ !Ref pAZ2, !GetAZs '' ]
+      Cooldown: 300
+      DefaultInstanceWarmup: 0
+      DesiredCapacity: 1
+      DesiredCapacityType: units
+      HealthCheckGracePeriod: 0
+      HealthCheckType: EC2
+      LaunchTemplate: 
+        LaunchTemplateId: !Ref rDevServerLaunchTemplate
+        Version: !GetAtt rDevServerLaunchTemplate.LatestVersionNumber
+      MaxSize: 1
+      MinSize: 1
+      TargetGroupARNs: 
+        - !Ref rDevServerTargetGroup
+      VPCZoneIdentifier: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet1"
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet2"
+
+
+  rWebServerLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      IpAddressType: dualstack
+      # LoadBalancerAttributes: 
+      #   - LoadBalancerAttribute #TODO S3 Logs
+      Name: !Sub "${pEnvironmentName}WebServer"
+      Scheme: internet-facing
+      SecurityGroups: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:LoadBalancerSecurityGroup"
+      Subnets: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PublicSubnet1"
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PublicSubnet2"
+      Type: application
+
+  rHTTPlistener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: 443
+            Host: "#{host}"
+            Path: "/#{path}"
+            Query: "#{query}"
+            StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref rWebServerLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  rWebServerHttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      DefaultActions: 
+        - Type: forward
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref rWebServerTargetGroup
+      LoadBalancerArn: !Ref rWebServerLoadBalancer
+      Port: 443
+      Protocol: HTTPS

@@ -1,0 +1,8 @@
+Description:  This template deploys a Monitoring resources for Badgevent
+
+Parameters:
+  pEnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+
+Resources:

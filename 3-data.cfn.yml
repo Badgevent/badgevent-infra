@@ -1,0 +1,130 @@
+Description:  This template deploys Database and Data Storage resources for Badgevent
+
+Parameters:
+  pEnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+
+Resources:
+
+
+  rWebServerEFS:
+    Type: AWS::EFS::FileSystem
+    DeletionPolicy: Retain
+    Properties: 
+      BackupPolicy: 
+        Status: ENABLED
+      Encrypted: True
+      PerformanceMode: generalPurpose
+      FileSystemTags:
+        - Key: Name
+          Value: !Ref pEnvironmentName
+
+  rWebServerEfsMountTargetAZ1:
+    Type: AWS::EFS::MountTarget
+    Properties: 
+      FileSystemId: !Ref rWebServerEFS
+      SecurityGroups: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:WebServerEfsSecurityGroup"
+      SubnetId: Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet1
+
+  rWebServerEfsMountTargetAZ2:
+    Type: AWS::EFS::MountTarget
+    Properties: 
+      FileSystemId: !Ref rWebServerEFS
+      SecurityGroups: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:WebServerEfsSecurityGroup"
+      SubnetId: Fn::ImportValue:
+            !Sub "${pEnvironmentName}:rPrivateSubnet2
+
+
+  rDatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties: 
+      DBSubnetGroupName: !Ref pEnvironmentName
+      DBSubnetGroupDescription: !Sub "${pEnvironmentName} Database Availability Zones"
+      SubnetIds: 
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet1"
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:PrivateSubnet2"
+
+  rMySQLAdmin:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    Properties:
+      KmsKeyId: alias/aws/secretsmanager
+      GenerateSecretString:
+        SecretStringTemplate: !Join [ '', [ '{"username": "', admin, '"}' ] ]
+        GenerateStringKey: 'password'
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+
+  rDBEnhancedMonitoringRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonRDSEnhancedMonitoringRole"
+      AssumeRolePolicyDocument:
+        Version: "2008-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: "monitoring.rds.amazonaws.com"
+            Action: "sts:AssumeRole"
+
+  rDBClusterParameterGroup:
+    Type: AWS::RDS::DBClusterParameterGroup
+    Properties:
+      Description: !Sub Database cluster parameter group for RDS Aurora ${pEnvironmentName}
+      Family: aurora-mysql8.0
+      Parameters:
+        tls_version: TLSv1.2
+
+  rDBParamGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: !Sub Database parameter group for RDS Aurora ${pEnvironmentName}
+      Family: aurora-mysql8.0
+      Parameters:
+        performance_schema: 0
+
+  rServerlessV2Cluster:
+    Type: 'AWS::RDS::DBCluster'
+    # DeletionPolicy: Snapshot
+    # UpdateReplacePolicy: Snapshot
+    Properties:
+      DatabaseName: !Ref pEnvironmentName
+      Engine: aurora-mysql
+      EngineMode: provisioned
+      EngineVersion: 8.0.mysql_aurora.3.02.2
+      DBSubnetGroupName: !Ref rDatabaseSubnetGroup
+      DBClusterParameterGroupName: !Ref rDBClusterParameterGroup
+      MasterUsername: admin
+      MasterUserPassword: !Join [ '', [ '{{resolve:secretsmanager:', !Ref rMySQLAdmin, ':SecretString:password}}' ] ]
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2
+      VpcSecurityGroupIds:
+        - Fn::ImportValue:
+            !Sub "${pEnvironmentName}:DatabaseServerSecurityGroup"
+      StorageEncrypted: true
+
+  rDBFirstInstance:
+    Type: "AWS::RDS::DBInstance"
+    Properties:
+      AllowMajorVersionUpgrade: false
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      DBClusterIdentifier: !Ref rServerlessV2Cluster
+      DBInstanceClass: db.serverless
+      DBParameterGroupName: !Ref rDBParamGroup
+      DBSubnetGroupName: !Ref rDatabaseSubnetGroup
+      EnablePerformanceInsights: true
+      PerformanceInsightsKMSKeyId: alias/aws/rds
+      Engine: aurora-mysql
+      MonitoringInterval: 60
+      MonitoringRoleArn: !GetAtt rDBEnhancedMonitoringRole.Arn
